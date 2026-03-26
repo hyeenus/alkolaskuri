@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>BAC (‰) Predictor — Measurements Mode</title>
+<style>
+  :root{
+    --bg:#0b0d12; --panel:#131722; --ink:#e8ecf1; --muted:#a8b0bd;
+    --accent:#6ec1ff; --accent2:#ff9a6e; --danger:#ff6b6b; --ok:#8ef5a2;
+    --grid:#1c2230; --line:#8ab4ff; --guide:#ffd36e; --limit:#ff7d7d; --now:#70e0a3;
+  }
+  html,body{height:100%; background:var(--bg); color:var(--ink); font:14px/1.35 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; margin:0;}
+  .wrap{max-width:1000px; margin:24px auto; padding:0 16px;}
+  h1{font-size:20px; margin:0 0 12px; font-weight:700; letter-spacing:.2px;}
+  .panel{background:var(--panel); border:1px solid #1b2030; border-radius:12px; padding:12px; margin-bottom:12px;}
+  .row{display:flex; flex-wrap:wrap; gap:8px; align-items:center;}
+  label{display:inline-flex; align-items:center; gap:6px; margin-right:16px; white-space:nowrap;}
+  input, select, button{
+    background:#0f1420; color:var(--ink); border:1px solid #273049; border-radius:8px;
+    padding:8px 10px; outline:none; transition:border .15s ease, box-shadow .15s ease;
+  }
+  input:focus, select:focus{border-color:var(--accent); box-shadow:0 0 0 2px #6ec1ff22;}
+  .section-title{font-weight:700; margin-bottom:8px; color:#e3e9f7;}
+  .error{margin-top:8px; color:var(--danger);}  
+  .help{font-size:12px; color:var(--muted);} 
+  .badge{display:inline-block; font-size:11px; padding:2px 6px; border-radius:999px; background:#0f1420; border:1px solid #25314a; color:#b8c2d7; margin-left:6px;}
+  
+  .measure-table{width:100%; border-collapse:collapse;}
+  .measure-table th, .measure-table td{padding:8px; border-bottom:1px solid #20283a; text-align:left;}
+  .measure-table input[type="number"]{width:120px;}
+  .measure-table input[type="datetime-local"]{width:220px;}
+  .btn{cursor:pointer;}
+  .btn.secondary{background:#121826; border-color:#2a3550;}
+  .btn.delete{background:#2a1720; border-color:#5b2b3b;}
+  .btn.add{background:#13261b; border-color:#2f5a3c;}
+  .btn.now{background:#11202a; border-color:#26566e; padding:6px 8px; font-size:12px;}
+
+  canvas{width:100%; height:380px; display:block; background:#0e1320; border-radius:12px; border:1px solid #1a2132;}
+
+  .estimates{display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px;}
+  .estimate{background:#0f1420; border:1px solid #222b41; border-radius:10px; padding:10px;}
+  .estimate h3{margin:0 0 4px; font-size:13px; color:var(--muted); font-weight:600;}
+  .estimate .value{font-size:18px; font-weight:700;}
+  @media (max-width:800px){ .estimates{grid-template-columns:1fr;} .measure-table input[type="datetime-local"]{width:100%;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>BAC Predictor (permille, ‰) — Measurements Mode <span class="badge">No further intake assumed</span></h1>
+
+  <!-- Person selectors -->
+  <div class="panel" id="personPanel">
+    <div class="section-title">Person</div>
+    <div class="row">
+      <label>Gender
+        <select id="gender">
+          <option value="male" selected>Male</option>
+          <option value="female">Female</option>
+        </select>
+      </label>
+      <label>Age (years)
+        <input id="age" type="number" min="16" step="1" value="30"/>
+      </label>
+      <label>Weight (kg)
+        <input id="weight" type="number" min="30" step="0.1" value="70"/>
+      </label>
+    </div>
+    <div class="help">Elimination is inferred from your measurements when possible; otherwise estimated from profile (gender, age, weight).</div>
+    <div class="error" id="personError"></div>
+  </div>
+
+  <!-- Measurements -->
+  <div class="panel" id="measPanel">
+    <div class="section-title">Measurements</div>
+    <table class="measure-table">
+      <thead>
+        <tr>
+          <th>BAC (‰)</th>
+          <th>Time (local)</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="measBody"></tbody>
+    </table>
+    <div class="row" style="margin-top:8px; gap:8px;">
+      <button class="btn add" id="btnAddMeas">+ Add Measurement</button>
+      <button class="btn secondary" id="btnReset">Reset Defaults</button>
+    </div>
+    <div class="help">Tip: Add 2–4 points (e.g., 19:30, 20:30, now). Past and future times are allowed.</div>
+    <div class="error" id="measError"></div>
+  </div>
+
+  <!-- Plot -->
+  <div class="panel">
+    <div class="section-title">Plot</div>
+    <canvas id="plot" width="1000" height="420" aria-label="BAC plot canvas"></canvas>
+    <div class="help">Bottom axis: hours from now. Top axis: local time of day. Vertical line = now. Horizontal line = 0.5‰. Hover for details.</div>
+  </div>
+
+  <!-- Estimates -->
+  <div class="panel">
+    <div class="section-title">Estimates (from now)</div>
+    <div class="estimates">
+      <div class="estimate">
+        <h3>Time below 0.5‰</h3>
+        <div class="value" id="tBelow05">—</div>
+        <div class="help" id="tBelow05Clock">&nbsp;</div>
+      </div>
+      <div class="estimate">
+        <h3>Time to 0.0‰</h3>
+        <div class="value" id="tZero">—</div>
+        <div class="help" id="tZeroClock">&nbsp;</div>
+      </div>
+      <div class="estimate">
+        <h3>Elimination used</h3>
+        <div class="value" id="elimUsed">—</div>
+        <div class="help" id="elimSource">&nbsp;</div>
+      </div>
+    </div>
+    <div class="help" style="margin-top:8px;">This is an estimate. Individual metabolism varies. Do not use for safety-critical decisions (e.g., driving).</div>
+  </div>
+</div>
+
+<script>
+(function(){
+  // ===== Utilities =====
+  const $ = sel => document.querySelector(sel);
+  const byId = id => document.getElementById(id);
+  function clamp(x,a,b){ return Math.max(a, Math.min(b, x)); }
+  function round2(x){ return (Math.round(x*100)/100); }
+  function fmt2(x){ return round2(x).toFixed(2); }
+  function pad2(n){ return String(n).padStart(2,'0'); }
+  function fmtHHMM(d){ return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); }
+  function toDatetimeLocalValue(d){ return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate())+'T'+pad2(d.getHours())+':'+pad2(d.getMinutes()); }
+  function parseDatetimeLocal(val){ return new Date(val); }
+  function minutesBetween(a,b){ return (a.getTime()-b.getTime())/60000; }
+  function addMinutes(d, m){ return new Date(d.getTime()+m*60000); }
+  function hhmmFromMinutes(mins){ const sign = mins<0?'-':''; mins=Math.abs(Math.round(mins)); const h=Math.floor(mins/60), m=mins%60; return sign+pad2(h)+':'+pad2(m); }
+
+  // ===== Person model =====
+  function rRatio(gender){ return (gender==='female')?0.55:0.68; }
+  function gramsPerHour(age){ if(age<25) return 8.0; if(age>=60) return 6.5; return 7.5; }
+  function betaFromProfile(gender, age, weightKg){ return gramsPerHour(age) / (rRatio(gender) * weightKg); } // ‰/h
+
+  // ===== Measurements DOM =====
+  const measBody = byId('measBody');
+  const measErrorEl = byId('measError');
+  const personErrorEl = byId('personError');
+  const tBelow05El = byId('tBelow05');
+  const tBelow05ClockEl = byId('tBelow05Clock');
+  const tZeroEl = byId('tZero');
+  const tZeroClockEl = byId('tZeroClock');
+  const elimUsedEl = byId('elimUsed');
+  const elimSourceEl = byId('elimSource');
+
+  function makeMeasRow(bac=0.80, when=new Date()){
+    const tr = document.createElement('tr');
+
+    const tdB = document.createElement('td');
+    const inpB = document.createElement('input');
+    inpB.type='number'; inpB.min='0'; inpB.max='5'; inpB.step='0.01'; inpB.value=bac; inpB.ariaLabel='BAC permille';
+    tdB.appendChild(inpB);
+
+    const tdT = document.createElement('td');
+    const inpT = document.createElement('input');
+    inpT.type='datetime-local'; inpT.value = toDatetimeLocalValue(when); inpT.ariaLabel='Measurement time (local)';
+    tdT.appendChild(inpT);
+    const btnNow = document.createElement('button'); btnNow.className='btn now'; btnNow.textContent='Now'; btnNow.style.marginLeft='8px';
+    btnNow.addEventListener('click', ()=>{ inpT.value=toDatetimeLocalValue(new Date()); scheduleUpdate(); });
+    tdT.appendChild(btnNow);
+
+    const tdX = document.createElement('td');
+    const btnDel = document.createElement('button'); btnDel.className='btn delete'; btnDel.textContent='Remove'; tdX.appendChild(btnDel);
+
+    tr.appendChild(tdB); tr.appendChild(tdT); tr.appendChild(tdX);
+
+    function onChange(){ scheduleUpdate(); }
+    inpB.addEventListener('input', onChange);
+    inpT.addEventListener('input', onChange);
+    btnDel.addEventListener('click', ()=>{
+      if (measBody.children.length<=1){ inpB.value=0.80; inpT.value=toDatetimeLocalValue(new Date()); }
+      else tr.remove();
+      scheduleUpdate();
+    });
+
+    return tr;
+  }
+
+  function readPerson(){ return { gender: byId('gender').value, age: Number(byId('age').value), weight: Number(byId('weight').value) }; }
+  function validatePerson(p){ const e=[]; if(!(p.gender==='male'||p.gender==='female')) e.push('Select a valid gender.'); if(!Number.isFinite(p.age)||p.age<16) e.push('Age must be ≥ 16 years.'); if(!Number.isFinite(p.weight)||p.weight<30) e.push('Weight must be ≥ 30 kg.'); return e; }
+
+  function readMeasurements(){ const rows = Array.from(measBody.children); return rows.map(tr=>{ const [inpB, inpT] = tr.querySelectorAll('input'); return { bac: Number(inpB.value), when: parseDatetimeLocal(inpT.value) }; }); }
+  function validateMeasurements(ms){
+    const e=[]; if(!ms.length) e.push('Add at least one measurement.');
+    ms.forEach((m,i)=>{
+      if(!Number.isFinite(m.bac)||m.bac<0) e.push(`Row ${i+1}: BAC must be ≥ 0.00‰.`);
+      if(!(m.when instanceof Date) || isNaN(m.when)) e.push(`Row ${i+1}: time is invalid.`);
+      // allow past & future; optional hard bound ±14 days to avoid extremes
+      const spanDays = Math.abs((m.when - new Date())/86400000);
+      if(spanDays>14) e.push(`Row ${i+1}: time is >14 days from now (limit for performance).`);
+    });
+    // Duplicate times
+    const seen = new Set();
+    ms.forEach((m,i)=>{ const t=m.when?m.when.getTime():NaN; if(seen.has(t)) e.push(`Rows have identical times (Row ${i+1}).`); else seen.add(t); });
+    return e;
+  }
+
+  // ===== Inference from measurements =====
+  function median(arr){ const a=arr.slice().sort((x,y)=>x-y); const n=a.length; if(!n) return NaN; return (n%2? a[(n-1)/2] : 0.5*(a[n/2-1]+a[n/2])); }
+
+  function inferElimination(msOrdered, priorBeta){
+    // Pairwise positive slopes between all point pairs (‰/h)
+    const n = msOrdered.length; const slopes=[];
+    for(let i=0;i<n;i++){
+      for(let j=i+1;j<n;j++){
+        const dtH = (msOrdered[j].when - msOrdered[i].when)/3600000; if (dtH<=0) continue;
+        const dy = msOrdered[i].bac - msOrdered[j].bac; // expect ≥0 if in elimination phase
+        const s = dy/dtH; if (isFinite(s) && s>0) slopes.push(s);
+      }
+    }
+    let beta = priorBeta; let source='profile';
+    if (slopes.length>=1){ const med = median(slopes); if (med>0.03 && med<0.35){ beta = clamp(med, 0.05, 0.30); source='measurements'; } }
+    return { beta, source, slopes };
+  }
+
+  function interceptFromPoints(msOrdered, beta, now){
+    // Robust intercept a (‰) so that y(t) = a - beta * tH best fits measurements in median sense
+    // where tH = (t - now)/h
+    const vals = msOrdered.map(m=> m.bac + beta * ((m.when - now)/3600000) );
+    return median(vals);
+  }
+
+  // ===== Simulation & plotting =====
+  const canvas = byId('plot');
+  const ctx = canvas.getContext('2d');
+  let plotData = { timesMin:[], bac:[], xMin:0, xMax:60, yMax:1, measPts:[], now:new Date() };
+  let hover = null;
+
+  function resizeCanvas(){ const dpr = window.devicePixelRatio || 1; const cssW = canvas.clientWidth; const cssH = canvas.clientHeight; canvas.width = Math.round(cssW * dpr); canvas.height = Math.round(cssH * dpr); ctx.setTransform(dpr,0,0,dpr,0,0); }
+
+  function renderPlot(){
+    const {timesMin, bac, xMin, xMax, measPts, now} = plotData;
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+    const padL=54, padR=16, padT=26, padB=34;
+
+    const maxB = Math.max(0.6, Math.max( ...(bac.length?bac:[0]) ));
+    const yMax = Math.ceil((maxB+0.1)*2)/2; plotData.yMax=yMax;
+
+    const xToPx = (xm)=> padL + ((xm - xMin)/(xMax - xMin || 1))*(W - padL - padR);
+    const yToPx = (y)=> H - padB - (y/(yMax||1))*(H - padT - padB);
+
+    ctx.clearRect(0,0,W,H);
+
+    // grid vertical per hour
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--grid');
+    ctx.lineWidth = 1; ctx.setLineDash([]); ctx.beginPath();
+    const startH = Math.ceil(xMin/60); const endH = Math.floor(xMax/60);
+    for (let h=startH; h<=endH; h++){ const xm = h*60; const x = xToPx(xm); ctx.moveTo(x, padT); ctx.lineTo(x, H-padB); }
+    for (let y=0; y<=yMax+1e-6; y+=0.5){ const yy = yToPx(y); ctx.moveTo(padL, yy); ctx.lineTo(W-padR, yy); }
+    ctx.stroke();
+
+    // bottom axis: hours from now
+    ctx.fillStyle = '#b9c2d8'; ctx.font='12px system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+    for(let h=startH; h<=endH; h++){ const xm=h*60; const x=xToPx(xm); const label=(h>0? ('+'+h+'h') : (h===0? '0h' : h+'h')); ctx.fillText(label, x, H-6); }
+
+    // top axis: HH:MM clock times
+    ctx.textBaseline='top'; const nowMs = now.getTime();
+    for(let h=startH; h<=endH; h++){ const xm=h*60; const x=xToPx(xm); const d=new Date(nowMs + xm*60000); ctx.fillText(fmtHHMM(d), x, 6); }
+
+    // now vertical line at x=0
+    const xNow = xToPx(0); ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--now'); ctx.lineWidth=1.5; ctx.setLineDash([5,4]); ctx.beginPath(); ctx.moveTo(xNow, padT); ctx.lineTo(xNow, H-padB); ctx.stroke(); ctx.setLineDash([]);
+
+    // 0.5‰ limit line
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--limit'); ctx.lineWidth=1.5; ctx.setLineDash([6,6]); const y05 = yToPx(0.5); ctx.beginPath(); ctx.moveTo(padL, y05); ctx.lineTo(W-padR, y05); ctx.stroke(); ctx.setLineDash([]);
+
+    // BAC curve
+    if (timesMin.length>1){ ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--line'); ctx.lineWidth=2; ctx.beginPath(); for(let i=0;i<timesMin.length;i++){ const x = xToPx(timesMin[i]); const y = yToPx(bac[i]); if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);} ctx.stroke(); }
+
+    // Measurement points
+    ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#2a3550';
+    for(const p of measPts){ const x = xToPx(p.minFromNow); const y = yToPx(p.bac); ctx.beginPath(); ctx.arc(x,y,3.5,0,Math.PI*2); ctx.fill(); ctx.stroke(); }
+
+    // Hover
+    if (hover!=null && timesMin.length){ const i = hover; const xm = timesMin[i]; const yv = bac[i]; const x = xToPx(xm); const y = yToPx(yv);
+      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--guide'); ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, H-padB); ctx.stroke(); ctx.beginPath(); ctx.arc(x,y,3.5,0,Math.PI*2); ctx.fillStyle='#fff'; ctx.fill();
+      const d = new Date(nowMs + xm*60000); const tip = `${xm>=0?'+':''}${hhmmFromMinutes(xm)} | ${fmtHHMM(d)} | ${fmt2(yv)}‰`;
+      ctx.font='12px system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif'; const tw = ctx.measureText(tip).width + 12; const th=22; let tx=x+8; let ty=y-th-8; if(tx+tw>W-16) tx=x-tw-8; if(ty<padT) ty=y+10;
+      ctx.fillStyle='rgba(20,24,36,0.95)'; ctx.strokeStyle='#2a3550'; ctx.lineWidth=1; ctx.beginPath(); ctx.roundRect(tx,ty,tw,th,6); ctx.fill(); ctx.stroke(); ctx.fillStyle='#e9eef8'; ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.fillText(tip, tx+6, ty+th/2); }
+
+    // y-axis title
+    ctx.fillStyle='#c6cedf'; ctx.save(); ctx.translate(14,(H - padB + padT)/2); ctx.rotate(-Math.PI/2); ctx.textAlign='center'; ctx.fillText('BAC (permille, ‰)', 0,0); ctx.restore();
+  }
+
+  function canvasIndexFromMouse(evt){ const rect = canvas.getBoundingClientRect(); const x = (evt.clientX - rect.left); const W = canvas.clientWidth; const padL=54, padR=16; const usable=W - padL - padR; const frac = clamp((x - padL) / (usable||1), 0, 1); const {xMin, xMax, timesMin} = plotData; const xm = xMin + frac*(xMax-xMin); let lo=0, hi=timesMin.length-1; if(hi<0) return null; while(hi-lo>1){ const mid=(lo+hi)>>1; if(timesMin[mid]<xm) lo=mid; else hi=mid; } const i = (Math.abs(timesMin[lo]-xm) <= Math.abs(timesMin[hi]-xm)) ? lo : hi; return i; }
+
+  canvas.addEventListener('mousemove', (e)=>{ const i = canvasIndexFromMouse(e); hover = (i==null?null:i); renderPlot(); });
+  canvas.addEventListener('mouseleave', ()=>{ hover=null; renderPlot(); });
+
+  // ===== Orchestration =====
+  let updatePending=false;
+  function scheduleUpdate(){ if(updatePending) return; updatePending=true; requestAnimationFrame(()=>{ updatePending=false; updateAll(); }); }
+
+  function updateAll(){
+    const person = readPerson();
+    const personErrs = validatePerson(person); personErrorEl.textContent = personErrs.join(' ');
+
+    const ms = readMeasurements();
+    const measErrs = validateMeasurements(ms); measErrorEl.textContent = measErrs.join(' ');
+
+    if (personErrs.length || measErrs.length){ plotData = { timesMin:[], bac:[], xMin:0, xMax:60, yMax:1, measPts:[], now:new Date() }; tBelow05El.textContent = '—'; tBelow05ClockEl.textContent=''; tZeroEl.textContent = '—'; tZeroClockEl.textContent=''; elimUsedEl.textContent='—'; elimSourceEl.textContent=''; resizeCanvas(); renderPlot(); return; }
+
+    // Sort by time and set global now
+    const now = new Date();
+    const msSorted = ms.slice().sort((a,b)=>a.when-b.when);
+
+    // Prior + inference
+    const priorBeta = betaFromProfile(person.gender, person.age, person.weight); // ‰/h
+    const {beta, source} = inferElimination(msSorted, priorBeta);
+
+    // Robust intercept so line fits measurements around now reference
+    const a = interceptFromPoints(msSorted, beta, now); // a ≈ predicted BAC at now (‰)
+    const bacNow = Math.max(0, a);
+
+    // Range: start at first point, end at max(latest point, zero+tail)
+    const earliestMin = Math.floor((msSorted[0].when - now)/60000);
+    const latestMin = Math.ceil((msSorted[msSorted.length-1].when - now)/60000);
+    const zeroMin = Math.max(0, Math.ceil((bacNow>0 && beta>0)? (bacNow/beta*60) : 0));
+    const xMin = earliestMin; // start exactly at first timepoint as requested
+    const xMax = Math.max(latestMin, zeroMin + 60);
+
+    // Sampling step adaptive ~ up to ~1500 points
+    const rangeMin = xMax - xMin; const stepMin = clamp(rangeMin/1500, 0.25, 10);
+
+    const timesMin=[], bacArr=[];
+    for(let xm=xMin; xm<=xMax+1e-6; xm+=stepMin){ const tH = xm/60; let y = a - beta*tH; if(y<0) y=0; timesMin.push(xm); bacArr.push(y); }
+
+    // Measurement points mapped to minutes from now
+    const measPts = msSorted.map(m=>({ bac:m.bac, minFromNow: Math.round((m.when - now)/60000) }));
+
+    plotData = { timesMin, bac: bacArr, xMin, xMax, measPts, now };
+
+    // Estimates from now
+    const below05Min = (bacNow<=0.5? 0 : Math.ceil( ((bacNow-0.5)/beta)*60 ));
+    tBelow05El.textContent = (below05Min===0? 'Already < 0.5‰' : hhmmFromMinutes(below05Min));
+    tBelow05ClockEl.textContent = (below05Min===0? '' : 'at '+fmtHHMM(addMinutes(now, below05Min)));
+
+    tZeroEl.textContent = hhmmFromMinutes(zeroMin);
+    tZeroClockEl.textContent = 'at '+fmtHHMM(addMinutes(now, zeroMin));
+
+    elimUsedEl.textContent = fmt2(beta)+' ‰/h';
+    elimSourceEl.textContent = (source==='measurements' ? `Inferred from ${msSorted.length} measurement${msSorted.length>1?'s':''} (spanning ${hhmmFromMinutes((msSorted[msSorted.length-1].when - msSorted[0].when)/60000)})` : `Estimated from profile (gender, age, weight)`);
+
+    canvas.title = `Elimination β: ${fmt2(beta)} ‰/h (profile prior ${fmt2(priorBeta)} ‰/h)`;
+
+    resizeCanvas(); renderPlot();
+  }
+
+  // Listeners
+  ['gender','age','weight'].forEach(id=> byId(id).addEventListener('input', scheduleUpdate));
+  byId('btnAddMeas').addEventListener('click', ()=>{
+    const now = new Date(); let when = now; let bac = 1.00;
+    if (measBody.children.length){ const lastRow = measBody.lastElementChild; const inpT = lastRow.querySelectorAll('input')[1]; const t = parseDatetimeLocal(inpT.value); when = addMinutes(t, -60); const inpB = lastRow.querySelectorAll('input')[0]; bac = Math.max(0, Number(inpB.value) + 0.12); }
+    measBody.appendChild(makeMeasRow(bac, when)); scheduleUpdate();
+  });
+  byId('btnReset').addEventListener('click', ()=>{ initDefaults(true); });
+
+  function initDefaults(force=false){ if (force){ measBody.innerHTML=''; } if (!measBody.children.length){ measBody.appendChild(makeMeasRow(0.80, new Date())); } scheduleUpdate(); }
+
+  // Responsive
+  window.addEventListener('resize', ()=>{ resizeCanvas(); renderPlot(); });
+
+  // Boot
+  initDefaults(true);
+})();
+</script>
+</body>
+</html>
